@@ -12,39 +12,65 @@ if (!GIT_URL) {
   process.exit(-1);
 }
 
+var BRANCH_NAME = publishUtils.exec('git rev-parse --abbrev-ref HEAD');
+
+var outDirBase = shell.tempdir();
+var pagesDir = outDirBase + '/.out';
+var branchDir = outDirBase + '/.branchout';
+
+var originDir = shell.pwd();
+
 // clear and re-create the out directory
-shell.rm('-rf', '.out');
-shell.mkdir('.out');
+shell.rm('-rf', pagesDir);
+shell.mkdir('-p', pagesDir);
+
+// clear and re-create the branch-out directory
+shell.rm('-rf', branchDir);
+shell.mkdir('-p', branchDir);
 
 // run our compile script
 console.log('=> Building storybook');
-if (packageJson.scripts['build-storybook']) {
+// TODO: use build script, don't hardcode 'static'
+if (false && packageJson.scripts['build-storybook']) {
   publishUtils.exec('npm run build-storybook');
 } else {
-  publishUtils.exec('node ./node_modules/.bin/build-storybook -o .out');
+  publishUtils.exec('node ./node_modules/.bin/build-storybook -s static -o ' + branchDir);
 }
 
-// go to the out directory and create a *new* Git repo
-shell.cd('.out');
-publishUtils.exec('git init');
+// go to the out directory
+shell.cd(pagesDir);
 
-// inside this git repo we'll pretend to be a new user
-publishUtils.exec('git config user.name "GH Pages Bot"');
-publishUtils.exec('git config user.email "hello@ghbot.com"');
+console.log('=> Cloning gh-pages from ' + GIT_URL);
+publishUtils.exec('git clone -b gh-pages --single-branch ' + GIT_URL + ' .');
 
-// The first and only commit to this new Git repo contains all the
-// files present with the commit message "Deploy to GitHub Pages".
-publishUtils.exec('git add .');
-publishUtils.exec('git commit -m "Deploy Storybook to GitHub Pages"');
+// clear and re-create branch directory
+shell.rm('-rf', BRANCH_NAME);
+shell.mkdir(BRANCH_NAME);
 
-// Force push from the current repo's master branch to the remote
-// repo's gh-pages branch. (All previous history on the gh-pages branch
-// will be lost, since we are overwriting it.) We redirect any output to
-// /dev/null to hide any sensitive credential data that might otherwise be exposed.
+shell.cd(BRANCH_NAME);
+shell.cp('-R', branchDir+'/*', '.');
+
+// Rewrite asset paths to branch directories
+// TODO: less hacky solution
+shell.sed('-i', '/static/', 'static/', 'static/preview.bundle.js');
+
+if (!publishUtils.exec('git status --porcelain')) {
+  console.log('No changes, exiting without deploy');
+  process.exit();
+}
+
+// Commit all the changes with the commit message "Deploy to GitHub Pages".
+console.log('=> Committing');
+publishUtils.exec('git add .'); // TODO: handle error states
+publishUtils.exec('git commit -m "Deploy '+ BRANCH_NAME + ' to GitHub Pages"');
+
 console.log('=> Deploying storybook');
-publishUtils.exec('git push --force --quiet ' + GIT_URL + ' master:gh-pages')
-shell.cd('..');
-shell.rm('-rf', '.out');
-
+publishUtils.exec('git push ' + GIT_URL)
 console.log();
-console.log('=> Storybook deployed to: ' + publishUtils.getGHPagesUrl(GIT_URL));
+console.log('=> Storybook deployed to: ' + publishUtils.getGHPagesUrl(GIT_URL) + '/' + BRANCH_NAME + '/');
+
+console.log('Cleaning up...');
+shell.cd(pagesDir+'/..');
+shell.rm('-rf', pagesDir);
+shell.rm('-rf', branchDir);
+
